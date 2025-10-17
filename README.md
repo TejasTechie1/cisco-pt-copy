@@ -13,7 +13,7 @@
 - **Unified domain language** – Shared TypeScript contracts keep backend, frontend, and docs perfectly in sync.
 - **Real-time aware** – WebSocket broadcasts mirror RESTful changes, so every client stays up to date.
 - **Simulation-first** – Device, link, and packet abstractions are tuned for replaying network events with granular metrics.
-- **State store ready** – A production-grade Zustand store handles topology drafts, selection state, and live event streams.
+- **Studio-grade frontend state** – The Zustand store now powers device palettes, cable builders, annotation layers, and scenario labs inspired by Cisco Packet Tracer.
 
 ---
 
@@ -48,6 +48,22 @@ Once the server boots you can:
 - `GET http://localhost:4000/api/projects` to fetch project summaries
 - Open a WebSocket at `ws://localhost:4000/ws/simulation` for live updates
 - `POST /api/projects/:id/simulation/events` to stream simulation changes
+
+---
+
+## 🎨 Frontend command center
+
+| Feature | What it brings |
+| --- | --- |
+| **Device palette** | A curated catalogue of routers, switches, firewalls, wireless controllers, IoT gateways, and end devices with realistic interface blueprints. |
+| **Cable builder** | Draft a connection, pick a medium (Cat6, fiber, serial, or wireless), and drop links with color-coded metadata. |
+| **Layer manager** | Physical, logical, security, and wireless layers toggle independently—with lock states to avoid accidental edits. |
+| **Annotation studio** | Drop text call-outs, zones, and shapes to mark VLANs, subnets, and change windows directly on the canvas. |
+| **Scenario lab** | Snapshot a topology into learning scenarios, set objectives, and rehydrate snapshots at any time for training drills. |
+| **Playback timeline** | Bookmark events, scrub ticks, and loop key simulations with a Packet-Tracer style time slider. |
+| **Layout intelligence** | Auto-align, grid, circle, or tree layouts to keep diagrams presentation-ready in a single click. |
+
+These capabilities live purely in state today, so connecting them to a React or WebGL workspace is as simple as wiring the selectors you need.
 
 ---
 

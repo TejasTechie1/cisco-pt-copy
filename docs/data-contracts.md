@@ -14,13 +14,18 @@ Each object is intentionally ergonomic for canvas visualisers, config editors, a
 
 | Entity | Core role | Favourite fields |
 | --- | --- | --- |
-| `Device` | Switch, router, host, firewall, or custom node | `interfaces`, `configuration.capabilities`, `status`, `position` |
-| `DeviceInterface` | L2/L3 edge of a device | `macAddress`, `ipv4`, `ipv6`, `status`, `metadata` |
-| `Link` | Connects two interface endpoints | `bandwidthMbps`, `latencyMs`, `status`, `metadata` |
+| `Device` | Switch, router, host, firewall, wireless controller, or IoT gateway | `interfaces`, `configuration.capabilities`, `status`, `position` |
+| `DeviceTemplate` | Blueprint used by the palette to spawn devices | `interfaceBlueprints`, `defaultConfiguration`, `category`, `icon` |
+| `CableProfile` | Describes cabling or wireless media for link drafting | `medium`, `bandwidthMbps`, `latencyMs`, `color`, `connectors` |
+| `Link` | Connects two interface endpoints | `bandwidthMbps`, `latencyMs`, `status`, `metadata.profileId` |
+| `TopologyLayer` | Layer toggle for physical/logical/security/wireless views | `type`, `visible`, `locked`, `order`, `color` |
+| `CanvasAnnotation` | Text, zone, shape, image, or path overlay | `position`, `size`, `color`, `background`, `metadata` |
 | `Packet` | Logical payload moving across a link | `payloadType`, `sizeBytes`, `ttl`, `metadata` |
 | `SimulationState` | Snapshot of the simulator heartbeat | `status`, `currentTick`, `metrics`, `lastEventId` |
 | `SimulationEvent` | Immutable change description | `simulation.*`, `packet.*`, `interface.state-changed`, `topology.updated` |
-| `Project` | Container for topology + simulation log | `topology`, `simulation`, `eventLog`, `tags` |
+| `SimulationPlaybackState` | Controls the Packet Tracer-style time slider | `isPlaying`, `speedMultiplier`, `cursorTick`, `bookmarks` |
+| `Scenario` | Snapshot used for guided labs and challenges | `objectives`, `difficulty`, `topologySnapshot`, `tags` |
+| `Project` | Container for topology, playback, scenarios, and events | `topology`, `simulation`, `playback`, `scenarios`, `eventLog` |
 
 ### Event taxonomy
 
@@ -45,6 +50,11 @@ mindmap
 
 > 💡 **Tip:** `SimulationEvent` is discriminated by `type`, so TypeScript narrows payloads automatically.
 
+### Palette & media blueprints
+
+- **Device templates** bundle vendor defaults, port layouts, and recommended layers—perfect for draggable palettes.
+- **Cable profiles** encode medium, bandwidth, latency, colour, and connectors so every rendered link can look and behave like the real thing.
+
 ---
 
 ## 2. Simulation helpers
@@ -54,16 +64,20 @@ The helper toolkit in [`src/shared/simulation.ts`](../src/shared/simulation.ts) 
 | Helper | What it does | Why it matters |
 | --- | --- | --- |
 | `createInitialSimulationMetrics()` | Produces zeroed counters | Makes sure metrics objects are never `undefined` |
+| `createDefaultTopologyLayers()` | Seeds physical/logical/security/wireless layers | UI can assume consistent layer IDs and colours |
+| `normalizeTopology(topology)` | Clones devices, links, layers, annotations, and views | Prevents stale references and injects defaults |
 | `ensureSimulationState(state?)` | Pads missing fields with defaults | Simplifies migrations and partial updates |
+| `ensurePlaybackState(state?)` | Normalises playback state and bookmarks | Time slider stays predictable across clients |
 | `applySimulationEvent(project, event)` | Pure function applying an event | Guarantees identical results across server and client |
-| `normalizeProject(project)` | Sanitises topology/device arrays | Avoids rendering edge cases on the canvas |
-| `normalizeProjects(projects)` | Map of normalised projects keyed by id | Perfect fit for Zustand state map |
+| `normalizeProject(project)` | Sanitises the entire project tree | Avoids rendering edge cases and keeps logs trimmed |
+| `normalizeProjects(projects)` | Map of normalised projects keyed by id | Perfect fit for Zustand or other stores |
 
 ```ts
-import { applySimulationEvent } from '@shared';
+import { applySimulationEvent, ensurePlaybackState } from '@shared';
 
 const nextProject = applySimulationEvent(currentProject, event);
-// ✅ Both backend and frontend derive the exact same mutations
+const playback = ensurePlaybackState(nextProject.playback);
+// ✅ Both backend and frontend derive the exact same mutations & timeline cursor
 ```
 
 ---
@@ -78,8 +92,8 @@ The Express server (`src/backend/server.ts`) is stateless outside an **in-memory
 | --- | --- | --- |
 | `GET` | `/api/projects` | Returns `ProjectSummary[]` for lightweight dashboards |
 | `POST` | `/api/projects` | Accepts `ProjectCreateRequest`; validates `name` + `topology` |
-| `GET` | `/api/projects/:projectId` | Full `Project` payload (topology + simulation state + log) |
-| `PUT` | `/api/projects/:projectId` | `ProjectUpdateRequest`; respects partial updates |
+| `GET` | `/api/projects/:projectId` | Full `Project` payload (topology + simulation state + playback + log) |
+| `PUT` | `/api/projects/:projectId` | `ProjectUpdateRequest`; respects partial updates, playback tweaks, and scenario swaps |
 | `DELETE` | `/api/projects/:projectId` | Idempotently removes a project |
 | `POST` | `/api/projects/:projectId/simulation/events` | Hydrates `id` + `timestamp` if missing, applies event, broadcasts |
 
@@ -103,7 +117,8 @@ Sample create request:
       }
     ],
     "links": []
-  }
+  },
+  "scenarios": []
 }
 ```
 
@@ -137,35 +152,22 @@ sequenceDiagram
 
 ---
 
-## 4. Frontend state orchestration
+## 4. Cisco Packet Tracer-inspired workflow
 
-The Zustand store (`src/frontend/state/networkStore.ts`) mirrors backend logic, making UI layers predictable.
+The Zustand store (`src/frontend/state/networkStore.ts`) mirrors backend logic and layers on a Packet Tracer-style UX. Highlights:
 
-### Slice overview
+| Capability | API surface |
+| --- | --- |
+| Device palette | `deviceTemplates`, `addDeviceFromTemplate(templateId, position)` |
+| Cable builder | `beginConnection(deviceId, interfaceId)`, `completeConnection(deviceId, interfaceId)`, `cancelConnection()` |
+| Media awareness | `cableProfiles`, metadata embedded in generated `Link` objects |
+| Layer control | `toggleLayerVisibility(layerId)`, `toggleLayerLock(layerId)`, `upsertLayer(layer)` |
+| Annotation studio | `addAnnotation(annotation)`, `updateAnnotation(id, patch)`, `removeAnnotation(id)` |
+| Layout intelligence | `alignSelection('horizontal' | 'vertical' | 'grid')`, `autoLayout('grid' | 'circle' | 'tree')` |
+| Scenario lab | `createScenarioFromActiveProject(seed)`, `applyScenario(id)`, `updateScenario(id, patch)`, `deleteScenario(id)` |
+| Playback timeline | `setPlaybackState(patch)`, `addPlaybackBookmark(label, eventId, tick)`, `removePlaybackBookmark(id)` |
 
-| State field | Description | Notes |
-| --- | --- | --- |
-| `projects` | Map of `Project` keyed by `id` | Always normalised | 
-| `activeProjectId` | Project in focus | Defaults to the first available |
-| `eventLog` | Rolling window of `SimulationEvent` | Clipped to `MAX_EVENT_LOG_ENTRIES` |
-| `topologyDraft` | Transient topology edits | Useful for staged editor workflows |
-| `selectedDeviceId` / `selectedLinkId` | Canvas/UI selection | Auto-clears when items disappear |
-| `isSyncing` | Generic loading flag | Hook into REST + WS lifecycles |
-
-### High-signal actions
-
-- `setProjects(projects)` – Hydrate from REST/WS snapshots.
-- `upsertProject(project)` – Merge updates while auto-selecting the first project.
-- `recordSimulationEvent(event)` – Purely applies state via shared helper then appends to the global log.
-- `patchDevice(deviceId, patch)` / `patchLink(linkId, patch)` – Lightweight mutations when editing locally.
-- `reset()` – Clears everything, ideal for logout/cleanup flows.
-
-```ts
-import { useNetworkStore } from '@/frontend/state/networkStore';
-
-const record = useNetworkStore.getState().recordSimulationEvent;
-record(eventFromSocket);
-```
+All mutations share the same helper utilities as the backend to maintain deterministic updates across clients.
 
 ---
 
@@ -173,29 +175,32 @@ record(eventFromSocket);
 
 ```mermaid
 flowchart TD
+  Palette[Device Palette]
+  Builder[Cable Builder]
+  Layers[Layer Manager]
+  Store[(Zustand Store)]
   REST[REST Requests]
   WS[WebSocket Stream]
-  Store[(In-memory Project Store)]
   Helpers{{Shared Helpers}}
-  State[Zustand Store]
   Canvas[UI Topology Canvas]
 
+  Palette --> Store
+  Builder --> Store
+  Layers --> Store
   REST --> Store
   WS --> Store
   Store --> REST
   Store --> WS
   Helpers --> Store
-  Helpers --> State
-  WS --> State
-  REST --> State
-  State --> Canvas
+  Store --> Canvas
   Canvas --> REST
 ```
 
 ### Lifecycle narrative
 1. REST responses and WebSocket broadcasts pipe through shared helpers.
 2. Zustand ingests the same contracts, ensuring visual state matches server truth.
-3. Editors tweak `topologyDraft`, push updates via REST, and immediately see broadcasts.
+3. Editors tweak `topologyDraft`, drop devices from the palette, and apply cable profiles before pushing updates via REST.
+4. Scenario snapshots capture entire topologies for guided labs, and the playback timeline keeps the Packet Tracer vibe alive.
 
 > 🪄 **Next step idea:** Add a background worker that emits packet events in real time—your UI already knows how to digest them.
 
@@ -206,8 +211,10 @@ flowchart TD
 | Term | Meaning |
 | --- | --- |
 | **Topology** | The device + link graph that the simulator understands |
+| **Topology layer** | Visual layer (physical/logical/security/wireless) with independent visibility & lock state |
 | **Simulation tick** | Incrementing counter indicating progression of the simulator clock |
-| **Metrics** | Snapshot stats (latency, throughput, packet counts) refreshed via events |
+| **Playback bookmark** | Saved cursor position for quickly jumping to a pivotal event |
+| **Scenario** | Saved topology snapshot with objectives for drills or guided practice |
 | **Event log** | Chronological list of timeline entries, trimmed to keep clients fast |
 
 Stay curious, keep packets flowing, and make the topology glow ✨

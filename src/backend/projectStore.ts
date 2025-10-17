@@ -7,7 +7,9 @@ import {
   ProjectUpdateRequest,
   SimulationEvent,
   applySimulationEvent,
+  createInitialPlaybackState,
   createInitialSimulationMetrics,
+  ensurePlaybackState,
   ensureSimulationState,
   normalizeProject,
   normalizeProjects,
@@ -25,6 +27,8 @@ const createInitialProject = (payload: ProjectCreateRequest): Project => {
       currentTick: 0,
       metrics: createInitialSimulationMetrics(),
     }),
+    playback: createInitialPlaybackState(),
+    scenarios: payload.scenarios ?? [],
     eventLog: [],
     createdAt: now,
     updatedAt: now,
@@ -84,6 +88,13 @@ export class InMemoryProjectStore {
             metrics: payload.simulation.metrics ?? existing.simulation.metrics,
           })
         : existing.simulation,
+      playback: payload.playback
+        ? ensurePlaybackState({
+            ...(existing.playback ?? createInitialPlaybackState()),
+            ...payload.playback,
+          })
+        : existing.playback,
+      scenarios: payload.scenarios ?? existing.scenarios,
       tags: payload.tags ?? existing.tags,
       updatedAt: new Date().toISOString(),
     });
