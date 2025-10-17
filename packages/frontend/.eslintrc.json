@@ -1,0 +1,22 @@
+{
+  "extends": [
+    "../../.eslintrc.json",
+    "plugin:react-hooks/recommended"
+  ],
+  "plugins": ["react-refresh"],
+  "parserOptions": {
+    "ecmaFeatures": {
+      "jsx": true
+    }
+  },
+  "rules": {
+    "react-refresh/only-export-components": [
+      "warn",
+      { "allowConstantExport": true }
+    ]
+  },
+  "env": {
+    "browser": true,
+    "es2020": true
+  }
+}
