@@ -1,112 +1,213 @@
-# Network Simulation Data Contracts and State Flows
+# 🌐 Network Simulation Data Contracts & Flows
 
-This document summarises the canonical domain models, API contracts, and state management flows introduced for the network topology simulation platform. The goal is to provide a shared source of truth for future feature work across the frontend and backend.
+> _One domain language, shared across backend, frontend, and docs._
+>
+> Everything under `src/shared` is the truth source. Import the types, follow the shapes, and your features stay in lockstep.
 
-## Shared domain models
+![Network schematic](https://img.shields.io/badge/topology-ready-f97316?style=for-the-badge)
 
-The `/src/shared` module exposes TypeScript types that describe the simulation domain.
+---
 
-### Core entities
+## 1. Canonical entities
 
-| Entity | Description | Key Fields |
+Each object is intentionally ergonomic for canvas visualisers, config editors, and stream processors. They live in [`src/shared/types.ts`](../src/shared/types.ts).
+
+| Entity | Core role | Favourite fields |
 | --- | --- | --- |
-| `Device` | Represents a node in the network topology | `id`, `name`, `role`, `interfaces`, `configuration`, `status`, `position` |
-| `DeviceInterface` | Network interface on a device | `id`, `name`, `macAddress`, `ipv4`, `ipv6`, `status` |
-| `Link` | Connection between two interfaces | `id`, `endpoints`, `bandwidthMbps`, `latencyMs`, `status` |
-| `Packet` | Logical packet transmitted in the simulation | `id`, `source`, `destination`, `payloadType`, `sizeBytes`, `ttl`, `createdAt` |
-| `SimulationState` | Aggregated state for a running or idle simulation | `status`, `currentTick`, `startedAt`, `stoppedAt`, `metrics`, `lastEventId` |
-| `SimulationEvent` | Discrete event emitted by the simulation | Lifecycle events, packet events, interface status changes, topology updates, metrics snapshots |
-| `Project` | Container for a topology and its simulation state | `id`, `name`, `description`, `topology`, `simulation`, `eventLog`, `tags`, `createdAt`, `updatedAt` |
+| `Device` | Switch, router, host, firewall, or custom node | `interfaces`, `configuration.capabilities`, `status`, `position` |
+| `DeviceInterface` | L2/L3 edge of a device | `macAddress`, `ipv4`, `ipv6`, `status`, `metadata` |
+| `Link` | Connects two interface endpoints | `bandwidthMbps`, `latencyMs`, `status`, `metadata` |
+| `Packet` | Logical payload moving across a link | `payloadType`, `sizeBytes`, `ttl`, `metadata` |
+| `SimulationState` | Snapshot of the simulator heartbeat | `status`, `currentTick`, `metrics`, `lastEventId` |
+| `SimulationEvent` | Immutable change description | `simulation.*`, `packet.*`, `interface.state-changed`, `topology.updated` |
+| `Project` | Container for topology + simulation log | `topology`, `simulation`, `eventLog`, `tags` |
 
-The `SimulationEvent` union covers the following discriminated variants:
+### Event taxonomy
 
-- `simulation.started`, `simulation.paused`, `simulation.resumed`, `simulation.stopped`
-- `simulation.tick`
-- `simulation.metrics`
-- `packet.transmitted`
-- `packet.dropped`
-- `interface.state-changed`
-- `topology.updated`
+```mermaid
+mindmap
+  root((SimulationEvent))
+    Lifecycle
+      simulation.started
+      simulation.paused
+      simulation.resumed
+      simulation.stopped
+    Tempo
+      simulation.tick
+      simulation.metrics
+    Traffic
+      packet.transmitted
+      packet.dropped
+    Topology
+      interface.state-changed
+      topology.updated
+```
 
-Associated helper utilities (`applySimulationEvent`, `normalizeProject`, etc.) live in `src/shared/simulation.ts` and are reused by both the backend and the frontend state store.
+> 💡 **Tip:** `SimulationEvent` is discriminated by `type`, so TypeScript narrows payloads automatically.
 
-## Backend API surface
+---
 
-The Express server at `src/backend/server.ts` exposes REST endpoints and a WebSocket for realtime updates. All payloads reuse the shared types to keep the contracts aligned.
+## 2. Simulation helpers
+
+The helper toolkit in [`src/shared/simulation.ts`](../src/shared/simulation.ts) gives both backend and frontend deterministic behaviour.
+
+| Helper | What it does | Why it matters |
+| --- | --- | --- |
+| `createInitialSimulationMetrics()` | Produces zeroed counters | Makes sure metrics objects are never `undefined` |
+| `ensureSimulationState(state?)` | Pads missing fields with defaults | Simplifies migrations and partial updates |
+| `applySimulationEvent(project, event)` | Pure function applying an event | Guarantees identical results across server and client |
+| `normalizeProject(project)` | Sanitises topology/device arrays | Avoids rendering edge cases on the canvas |
+| `normalizeProjects(projects)` | Map of normalised projects keyed by id | Perfect fit for Zustand state map |
+
+```ts
+import { applySimulationEvent } from '@shared';
+
+const nextProject = applySimulationEvent(currentProject, event);
+// ✅ Both backend and frontend derive the exact same mutations
+```
+
+---
+
+## 3. Backend surface area
+
+The Express server (`src/backend/server.ts`) is stateless outside an **in-memory project store**. The store itself speaks the shared language, so swapping to a database involves zero schema gymnastics.
 
 ### REST endpoints
 
-| Method | Path | Description | Request | Response |
-| --- | --- | --- | --- | --- |
-| `GET` | `/api/projects` | List project summaries | – | `ProjectListResponse` (array of summaries) |
-| `POST` | `/api/projects` | Create a project | `ProjectCreateRequest` | `ProjectResponse` |
-| `GET` | `/api/projects/:projectId` | Fetch a project with full topology and simulation details | – | `ProjectResponse` |
-| `PUT` | `/api/projects/:projectId` | Update project metadata, topology, or simulation state | `ProjectUpdateRequest` | `ProjectResponse` |
-| `DELETE` | `/api/projects/:projectId` | Remove a project | – | `204 No Content` |
-| `POST` | `/api/projects/:projectId/simulation/events` | Submit a simulation event to mutate state and broadcast | `SimulationEvent` (missing `id`/`timestamp` will be auto-hydrated) | `{ success: true }` |
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/projects` | Returns `ProjectSummary[]` for lightweight dashboards |
+| `POST` | `/api/projects` | Accepts `ProjectCreateRequest`; validates `name` + `topology` |
+| `GET` | `/api/projects/:projectId` | Full `Project` payload (topology + simulation state + log) |
+| `PUT` | `/api/projects/:projectId` | `ProjectUpdateRequest`; respects partial updates |
+| `DELETE` | `/api/projects/:projectId` | Idempotently removes a project |
+| `POST` | `/api/projects/:projectId/simulation/events` | Hydrates `id` + `timestamp` if missing, applies event, broadcasts |
 
-Validation failures return `ApiErrorResponse` with an `error` message and optional `details` field.
+Sample create request:
+
+```jsonc
+{
+  "name": "Campus Core",
+  "description": "Lab topology for QoS experiments",
+  "topology": {
+    "devices": [
+      {
+        "id": "rtr-1",
+        "name": "Core Router",
+        "role": "router",
+        "status": "online",
+        "configuration": { "capabilities": ["routing", "monitoring"] },
+        "interfaces": [
+          { "id": "ge-0/0/0", "name": "uplink", "macAddress": "AA:BB:CC:DD:EE:FF", "status": "up" }
+        ]
+      }
+    ],
+    "links": []
+  }
+}
+```
 
 ### WebSocket channel
 
-- URL: `ws://<host>/ws/simulation`
-- All frames are JSON objects conforming to the `SimulationSocketMessage` type.
+| Message | Payload | Dispatch trigger |
+| --- | --- | --- |
+| `projects.initial` | `Project[]` snapshot on connection | Connection handshake |
+| `project.created` | `Project` | REST `POST /api/projects` |
+| `project.updated` | `Project` | REST `PUT` or simulation events |
+| `project.deleted` | `{ projectId }` | REST `DELETE` |
+| `simulation.event` | Individual `SimulationEvent` | Any accepted simulation event |
+| `pong` | `{ timestamp }` | Reply to client `{ "type": "ping" }` |
+| `error` | `{ message }` | Malformed client messages |
 
-| Message Type | Payload |
+Connection flow:
+
+```mermaid
+sequenceDiagram
+  participant Client
+  participant WS
+  participant Store
+
+  Client->>WS: CONNECT /ws/simulation
+  WS-->>Client: projects.initial
+  Store->>WS: project.created
+  WS-->>Client: project.created
+  Client->>WS: { "type": "ping" }
+  WS-->>Client: { "type": "pong" }
+```
+
+---
+
+## 4. Frontend state orchestration
+
+The Zustand store (`src/frontend/state/networkStore.ts`) mirrors backend logic, making UI layers predictable.
+
+### Slice overview
+
+| State field | Description | Notes |
+| --- | --- | --- |
+| `projects` | Map of `Project` keyed by `id` | Always normalised | 
+| `activeProjectId` | Project in focus | Defaults to the first available |
+| `eventLog` | Rolling window of `SimulationEvent` | Clipped to `MAX_EVENT_LOG_ENTRIES` |
+| `topologyDraft` | Transient topology edits | Useful for staged editor workflows |
+| `selectedDeviceId` / `selectedLinkId` | Canvas/UI selection | Auto-clears when items disappear |
+| `isSyncing` | Generic loading flag | Hook into REST + WS lifecycles |
+
+### High-signal actions
+
+- `setProjects(projects)` – Hydrate from REST/WS snapshots.
+- `upsertProject(project)` – Merge updates while auto-selecting the first project.
+- `recordSimulationEvent(event)` – Purely applies state via shared helper then appends to the global log.
+- `patchDevice(deviceId, patch)` / `patchLink(linkId, patch)` – Lightweight mutations when editing locally.
+- `reset()` – Clears everything, ideal for logout/cleanup flows.
+
+```ts
+import { useNetworkStore } from '@/frontend/state/networkStore';
+
+const record = useNetworkStore.getState().recordSimulationEvent;
+record(eventFromSocket);
+```
+
+---
+
+## 5. Putting it together
+
+```mermaid
+flowchart TD
+  REST[REST Requests]
+  WS[WebSocket Stream]
+  Store[(In-memory Project Store)]
+  Helpers{{Shared Helpers}}
+  State[Zustand Store]
+  Canvas[UI Topology Canvas]
+
+  REST --> Store
+  WS --> Store
+  Store --> REST
+  Store --> WS
+  Helpers --> Store
+  Helpers --> State
+  WS --> State
+  REST --> State
+  State --> Canvas
+  Canvas --> REST
+```
+
+### Lifecycle narrative
+1. REST responses and WebSocket broadcasts pipe through shared helpers.
+2. Zustand ingests the same contracts, ensuring visual state matches server truth.
+3. Editors tweak `topologyDraft`, push updates via REST, and immediately see broadcasts.
+
+> 🪄 **Next step idea:** Add a background worker that emits packet events in real time—your UI already knows how to digest them.
+
+---
+
+## 6. Reference glossary
+
+| Term | Meaning |
 | --- | --- |
-| `projects.initial` | `Project[]` snapshot sent immediately on connection |
-| `project.created` / `project.updated` / `project.deleted` | Delta updates for project lifecycle |
-| `simulation.event` | A single `SimulationEvent` as it occurs |
-| `pong` | `{ timestamp: string }` heartbeat reply for client `ping` frames |
-| `error` | `{ message: string }` returned when the server cannot parse a client message |
+| **Topology** | The device + link graph that the simulator understands |
+| **Simulation tick** | Incrementing counter indicating progression of the simulator clock |
+| **Metrics** | Snapshot stats (latency, throughput, packet counts) refreshed via events |
+| **Event log** | Chronological list of timeline entries, trimmed to keep clients fast |
 
-Clients can optionally send `{ "type": "ping" }` frames to receive a `pong` response.
-
-## Frontend state management
-
-The Zustand-powered store (`src/frontend/state/networkStore.ts`) orchestrates UI state.
-
-### Stored slices
-
-- `projects`: Normalised map of `Project` objects keyed by `id`.
-- `activeProjectId`: Currently focused project for editing or simulation playback.
-- `eventLog`: Global rolling window (max `MAX_EVENT_LOG_ENTRIES`) of recent `SimulationEvent`s.
-- `topologyDraft`: Optional working copy of the topology for UI editors.
-- `selectedDeviceId` / `selectedLinkId`: Highlighted entities in the UI.
-- `isSyncing`: Flag for network activity indicators.
-
-### Core actions
-
-| Action | Purpose |
-| --- | --- |
-| `setProjects(projects)` | Bulk replace the project map (e.g., initial load) while preserving selections when possible. |
-| `upsertProject(project)` | Insert or replace a single project record; auto-select if nothing is active. |
-| `removeProject(projectId)` | Delete a project and clean up related selections/events. |
-| `setActiveProject(projectId)` | Switch the focused project. |
-| `recordSimulationEvent(event)` | Apply a live event via `applySimulationEvent`, updating both the project and the global log. |
-| `patchDevice(deviceId, patch)` / `patchLink(linkId, patch)` | Update topology elements for the active project. |
-| `setTopologyDraft(draft)` / `setIsSyncing(flag)` | Manage UI-specific state. |
-| `selectDevice(deviceId)` / `selectLink(linkId)` | Track UI selections with validation. |
-| `reset()` | Clear the store to its initial state. |
-
-All mutations share the same helper utilities as the backend to maintain deterministic updates across clients.
-
-## Data flow summary
-
-1. **Initial load**
-   - Frontend calls `GET /api/projects` for summaries, then `GET /api/projects/:id` for full data as needed.
-   - WebSocket connection opens and receives `projects.initial`, hydrating the store.
-
-2. **Topology editing**
-   - UI mutations operate on `topologyDraft` until the user saves.
-   - Saving issues a `PUT /api/projects/:id` request; the backend broadcasts `project.updated` to other clients.
-
-3. **Simulation runtime**
-   - Backend (or an external simulator) posts events to `/api/projects/:id/simulation/events`.
-   - Each event updates the in-memory store, then broadcasts `simulation.event` and `project.updated` for synchronisation.
-   - Frontend calls `recordSimulationEvent` which reuses `applySimulationEvent` to mirror backend state.
-
-4. **Deletion**
-   - `DELETE /api/projects/:id` removes the record server-side. A `project.deleted` message prompts clients to clean up local state.
-
-These contracts create a consistent foundation for upcoming features such as collaborative topology editing, visual playback of packet flows, or persisting data to an external database.
+Stay curious, keep packets flowing, and make the topology glow ✨

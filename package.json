@@ -4,7 +4,10 @@
   "private": true,
   "scripts": {
     "build": "tsc --project tsconfig.json",
-    "start:backend": "ts-node --project tsconfig.json src/backend/server.ts"
+    "start:backend": "ts-node --project tsconfig.json src/backend/server.ts",
+    "lint": "node -e \"console.log('Linting placeholder – configure ESLint when ready.');\"",
+    "test": "node -e \"console.log('Test suite placeholder – add Vitest or Jest soon.');\"",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "cors": "^2.8.5",
